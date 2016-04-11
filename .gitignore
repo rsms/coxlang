@@ -1,0 +1,12 @@
+.DS_Store
+*.o
+*.a
+*.d
+*.gz
+*.pyc
+build
+build.ninja
+.ninja*
+misc/.gclient*
+misc/depot_tools
+misc/v8

@@ -1,0 +1,15 @@
+The built in cancellation mechanism must support wide array of use cases:
+
+- Cancel entire program leaving no resource leaks behind.
+- Cancel a subsystem without any leaks.
+- Cancel a subsystem when a timeout expires. No leaks.
+- Give subsystem a grace period to finish its work before canceling it.
+- Grace period should be omitted if the subsystem has no work to do anyway.
+- Allow for interwoven cancellation when cancellation of a supersystem happens
+  while cancellation of a subsystem is in progress.
+
+If the cancellation mechanism is not this generic users would have to
+implement these use cases by hand which will in turn lead to introduction
+of state machines into the code.
+
+http://250bpm.com/blog:70

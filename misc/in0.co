@@ -1,0 +1,144 @@
+     // line comment
+  /* This is a pretty
+     cool package. */
+  package bar
+import "foo/bar"
+import (
+
+  "lolcat"
+  cat "lolcat"
+  . "lolcat"
+  meow "argh"
+)
+
+const (
+  lolcat = +x
+  loldog = 0644
+  lolhound // = loldog
+  lolbunny int32 = -4
+  money, hopes int64 = 0, 0xff
+)
+
+func foo(x, y int, z ...float) int {
+  if x > 4 {
+    return 4
+  }
+  return x
+}
+
+// invalid rest spec:
+// func foo(a, b ...float) int {}
+
+func (f Foo) bar(x, y string) (int, float) {
+  f.name = x
+}
+
+func main() int {
+  return foo(loldog)
+}
+
+✂ -------------------------------------
+
+// Capture DataTail (a constant array of bytes)
+const data = __data__
+
+type Foo struct {
+  x     int
+  a, b  foo.bar.Baz
+  y     float
+  z     *float
+  g     int
+  *Bar
+  B
+}
+
+✂ -------------------------------------
+
+type A struct<T> {
+  h T
+}
+
+type B struct<T, Y> {
+  *Foo
+  A<T>
+  i int
+}
+
+func simple() int {
+  return 1
+}
+
+✂ ----------------------------------------------------------------------
+
+func (Foo f) name() string {
+  return f.x == 3 ? "Three" : "Other"
+}
+
+/*
+
+func (f Foo) name() int {
+  return f.bar
+}
+
+func Foo:f.name() int {
+  return f.bar
+}
+
+func Foo(f).name() int {
+  return f.bar
+}
+
+func (Foo)f.name() int {
+  return f.bar
+}
+
+func Foo/f.name() int {
+  return f.bar
+}
+
+func f:Foo.name() int {
+  return f.bar
+}
+
+*/
+
+func main(argc int, argv const char*[]) int {
+  f Foo
+  f2 := Foo()
+  println("argc: \(argc), f.name(): \(f.name())")
+  return 0
+}
+
+✂ ----------------------------------------------------------------------
+// foo.h
+namespace bar {
+struct Foo {
+  int x = int();
+  float y = float();
+  float z = float();
+  int g = int();
+};
+struct A {
+  int h = int();
+};
+struct B {
+  struct Foo* Foo = nullptr;
+  struct A A;
+  int i = int();
+};
+string M$name(Foo&);
+}
+
+// foo.cc
+#include "foo.h"
+namespace bar {
+string M$name(Foo& f) {
+  return f.x == 3 ? "Three" : "Other";
+}
+}
+using namespace bar;
+int main(argc, const char* argv[]) {
+  Foo f;
+  Foo f2();
+  println(JoinStr("argc: ", argc, ", f.name(): ", M$name(f)));
+}

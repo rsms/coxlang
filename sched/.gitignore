@@ -1,0 +1,14 @@
+.DS_Store
+*.o
+*.a
+*.d
+*.gz
+*.pyc
+deps/boost
+deps/googletest
+deps/build
+deps/dist
+build
+build.ninja
+.ninja*
+.obj
