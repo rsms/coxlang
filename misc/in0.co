@@ -1,7 +1,7 @@
-     // line comment
-  /* This is a pretty
-     cool package. */
-  package bar
+// line comment
+/* This is a pretty
+   cool package. */
+package bar
 import "foo/bar"
 import (
 
@@ -16,10 +16,41 @@ const (
   loldog = 0644
   lolhound // = loldog
   lolbunny int32 = -4
+  hasInternet = false
   money, hopes int64 = 0, 0xff
 )
 
-func foo(x, y int, z ...float) int {
+const lol = "l\u00c4l😎" // \u00c4 = Ä = UTF8(C3 84)
+const foo = `raw
+  string
+  literals
+  are cool`
+
+type Integer int
+
+type Foo struct {
+  x     int
+  a, b  foo.bar.Baz
+  y     float
+  z     *float
+  g     Integer
+  Bar
+  *B
+}
+
+type Bar struct {
+  foo Foo
+  x   int
+}
+
+func Foo.bar() {}
+
+func int32.sum(x int32) int32 {
+  return @ + x
+}
+
+func foo(x int, y int, z ...float) int
+func foo(x int, y int, z ...float) int {
   if x > 4 {
     return 4
   }
@@ -27,11 +58,28 @@ func foo(x, y int, z ...float) int {
 }
 
 // invalid rest spec:
-// func foo(a, b ...float) int {}
+// func foo(a b ...float) int {}
 
-func (f Foo) bar(x, y string) (int, float) {
-  f.name = x
+// (MethodDecl bar
+//   (QualIdent a
+//     (QualIdent b
+//       (Ident Foo)))
+//   ...)
+func a.b.Foo.bar(x string, y string) int {
+  @name = x
 }
+// (MethodDecl bar
+//   (QualIdent a
+//     (Ident Foo))
+//   ...)
+func a.Foo.bar() {
+}
+// (MethodDecl bar
+//   (Ident Foo)
+//   ...)
+func Foo.bar() {
+}
+
 
 func main() int {
   return foo(loldog)

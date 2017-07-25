@@ -44,6 +44,7 @@
 #include <ostream>
 #include <unordered_set>
 #include <unordered_map>
+#include <string>
 
 
 struct IStr { RX_REF_MIXIN_NOVTABLE(IStr)
@@ -52,11 +53,13 @@ struct IStr { RX_REF_MIXIN_NOVTABLE(IStr)
   IStr() : self{0} {}; // == false == nullptr
   IStr(const char* s, uint32_t length);
   IStr(const char* cstr) : IStr(cstr, ::strlen(cstr)) {};
+  IStr(const std::string& s) : IStr(s.data(), s.size()) {};
   template <size_t N> IStr(const Const<N>& cs) : self((Imp*)(&cs)) {}
 
   uint32_t hash() const;
   uint32_t size() const;
   const char* c_str() const;
+  const char* data() const;  // alias for c_str
   bool equals(const IStr& other) const;
   bool ends_with(const char* bytes, size_t len) const;
   bool ends_with(const char* cstr) const;
@@ -200,6 +203,7 @@ inline IStr::IStr(const char* s, uint32_t length) : self(Imp::create(s, length))
 inline uint32_t IStr::hash() const { return self ? self->_hash : 0; }
 inline uint32_t IStr::size() const { return self ? self->_size : 0; }
 inline const char* IStr::c_str() const { return self ? self->c_str() : ""; }
+inline const char* IStr::data() const { return self ? self->c_str() : ""; }
 
 inline bool IStr::equals(const IStr& other) const {
   return self ? self->equals(other.self) : false;
@@ -362,14 +366,15 @@ constexpr typename make_indices_impl<max_index>::type make_indices() {
   return typename make_indices_impl<max_index>::type();
 }
 
-template<size_t N, size_t... Indexes>
-constexpr inline IStr::Const<N> ConstIStrx(const char(&s)[N], indices_holder<Indexes...>) {
+template<size_t N, size_t... Indices>
+constexpr inline IStr::Const<N>
+ConstIStrx(const char(&s)[N], indices_holder<Indices...>) {
   return IStr::Const<N>{
     RX_REF_COUNT_CONSTANT,
     IStr::hash(s, N-1),
     uint32_t(N-1),
     kIStrConstPMagic,
-    {(Indexes < N-1 ? s[Indexes] : char())...}
+    {(Indices < N-1 ? s[Indices] : char())...}
   };
 }
 
@@ -403,9 +408,11 @@ struct IStr::Set {
     // Convenience constructor that accepts any IStr implementation type that can be casted to Imp.
 
   IStr get(const char* s, uint32_t len=0xffffffffu);
+  IStr get(const std::string& s) { return get(s.data(), s.size()); }
     // Return a IStr representing the byte array `s` of `len` size, with a +1 reference count.
 
   IStr find(const char* s, uint32_t len=0xffffffffu);
+  IStr find(const std::string& s) { return find(s.data(), s.size()); }
     // Return a IStr if the set contains `s` of `len`. Otherwise a null IStr is returned.
 
 protected:
@@ -429,9 +436,11 @@ struct IStr::WeakSet {
     // Convenience constructor that accepts any IStr implementation type that can be casted to Imp.
 
   IStr get(const char* s, uint32_t len=0xffffffffu);
+  IStr get(const std::string& s) { return get(s.data(), s.size()); }
     // Return a IStr representing the byte array `s` of `len` size, with a +1 reference count.
 
   IStr find(const char* s, uint32_t len=0xffffffffu);
+  IStr find(const std::string& s) { return find(s.data(), s.size()); }
     // Return a IStr if the set contains `s` of `len`. Otherwise a null IStr is returned.
 
 protected:

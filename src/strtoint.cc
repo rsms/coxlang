@@ -1,4 +1,4 @@
-#include "strtou64.h"
+#include "strtoint.h"
 // #include <sys/cdefs.h>
 #include <limits.h>
 // #include <errno.h>
@@ -21,11 +21,12 @@
 //   return (c >= '0' && c <= '9');
 // }
 
-bool strtou64(const char* pch, size_t size, int base, uint64_t& result) {
+template <typename UInt, UInt UIntMax>
+static inline bool strtou(const char* pch, size_t size, int base, UInt& result) {
   const char* s = pch;
   const char* end = pch + size;
-  uint64_t acc = 0;
-  uint64_t cutoff;
+  UInt acc = 0;
+  UInt cutoff;
   int neg, any, cutlim;
   char c;
 
@@ -34,7 +35,7 @@ bool strtou64(const char* pch, size_t size, int base, uint64_t& result) {
   }
 
   any = 0;
-  cutoff = ULLONG_MAX;
+  cutoff = UIntMax;//ULLONG_MAX;
   cutlim = cutoff % base;
   cutoff /= base;
   for (c = *s ; s != end; c = *s++) {
@@ -63,6 +64,14 @@ bool strtou64(const char* pch, size_t size, int base, uint64_t& result) {
   {
     return false;
   }
-  result = (int64_t)acc;
+  result = acc;
   return true;
+}
+
+bool strtou64(const char* p, size_t size, int base, uint64_t& result) {
+  return strtou<uint64_t,0xffffffffffffffffULL>(p, size, base, result);
+}
+
+bool strtou32(const char* p, size_t size, int base, uint32_t& result) {
+  return strtou<uint32_t,0xffffffffU>(p, size, base, result);
 }

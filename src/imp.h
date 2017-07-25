@@ -1,9 +1,9 @@
 #pragma once
 #include "srcloc.h"
-#include "text.h"
 #include "ast.h"
 #include <map>
 #include <set>
+#include <string>
 
 struct ImportSpec {
   AstNode* name = nullptr;  // null for unnamed imports
@@ -27,4 +27,4 @@ struct ImportSpecLess {
 //     "foo": set{"", "y"}
 //   }
 using ImportSpecs = std::set<ImportSpec,ImportSpecLess>;
-using Imports     = std::map<Text,ImportSpecs>;
+using Imports     = std::map<std::string,ImportSpecs>;

@@ -1,8 +1,9 @@
 #pragma once
 #include <string>
 #include <ostream>
+#include "utf8/unchecked.h"
 
-using UChar                 = char32_t;
+using UChar                 = unsigned int;
 using Text                  = std::basic_string<UChar>; // Unicode text
 static const UChar UCharMax = UINT32_MAX;
 
@@ -12,15 +13,26 @@ using std::string;
 Text decodeUTF8(const string&);
   // Convert a UTF8 string to Unicode text.
 
+template <typename ByteIterator>
+UChar decodeUTF8Char(ByteIterator& it, const ByteIterator end);
+  // Decode one character from a UTF8 string. Advances `it`.
+
 string encodeUTF8(const Text&);
 string encodeUTF8(UChar);
   // Convert Unicode text into a UTF8 string.
+
+template <typename ByteIterator>
+ByteIterator& appendUTF8(ByteIterator&, UChar);
+void appendUTF8(string&, UChar);
+  // Append a character to a string as a UTF8-encoded sequence of bytes.
 
 size_t UTF8SizeOf(UChar);
   // Number of bytes needed to encode a character as UTF8
 
 string repr(UChar);
 string repr(const Text&);
+string repr(const string&);
+string repr(const char*, size_t len);
   // Printable UTF8 representation with non-graphic characters encoded as U+X{4,8}
 
 bool isValidChar(UChar);      // True if assigned by Unicode
@@ -75,6 +87,24 @@ enum Category : uint8_t {
 
 
 // ===============================================================================================
+
+template <typename ByteIterator>
+inline UChar decodeUTF8Char(ByteIterator& it, const ByteIterator end) {
+  return utf8::unchecked::next(it, end);
+}
+
+inline string repr(const string& str) {
+  return repr(str.data(), str.size());
+}
+
+template <typename ByteIterator>
+inline ByteIterator& appendUTF8(ByteIterator& s, UChar c) {
+  return utf8::unchecked::append<ByteIterator>(c, s);
+}
+
+inline void appendUTF8(string& s, UChar c) {
+  utf8::unchecked::append(c, std::back_inserter(s));
+}
 
 inline size_t UTF8SizeOf(UChar c) {
   return (c < 0x80) ? 1 : (c < 0x800) ? 2 : (c < 0x10000) ? 3 : 4;

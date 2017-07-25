@@ -1,4 +1,5 @@
 #include "ast.h"
+#include "freelist.h"
 
 const std::string& ast_typename(AstType t) {
   using std::string;
@@ -17,9 +18,17 @@ static const char kSpaces[] = "                                                 
 
 
 static std::ostream& ast_reprchild(AstNode& n, std::ostream& os, uint32_t depth) {
-  for (auto cn = n.firstChild; cn != nullptr; cn = cn->nextSib) {
+  for (auto cn = n.children.first; cn != nullptr; cn = cn->nextSib) {
     os << "\n";
     ast_repr(*cn, os, depth);
+  }
+  return os;
+}
+
+
+static std::ostream& repr_ty(AstNode& n, std::ostream& os, uint32_t depth) {
+  if (n.ty != nullptr) {
+    os << '<' << n.ty->repr(depth) << '>';
   }
   return os;
 }
@@ -41,9 +50,12 @@ std::ostream& ast_repr(AstNode& n, std::ostream& os, uint32_t depth) {
     indent -= n;
   }
 
+  repr_ty(n, os, depth);
+
   switch (n.type) {
 
     // no value, with children
+    case AstBlock:
     case AstProgram:
     case AstStructType:
     case AstPointerType:
@@ -92,8 +104,8 @@ std::ostream& ast_repr(AstNode& n, std::ostream& os, uint32_t depth) {
     }
 
     // with int value =bool, no children
-    case AstBoolConst: {
-      return os << (n.value.i ? "(BoolConst true)" : "(BoolConst false)");
+    case AstBool: {
+      return os << (n.value.i ? "(Bool true)" : "(Bool false)");
     }
 
     // with int value =uint64, no children
@@ -106,6 +118,16 @@ std::ostream& ast_repr(AstNode& n, std::ostream& os, uint32_t depth) {
       return os << '(' << ast_typename(n.type) << ' ' << n.value.str << ')';
     }
 
+    // with string text value, no children
+    case AstString: {
+      return os << '(' << ast_typename(n.type) << " \""
+                << text::repr(n.value.str.data(), n.value.str.size()) << "\")";
+    }
+    case AstRawString: {
+      return os << '(' << ast_typename(n.type) << " `"
+                << text::repr(n.value.str.data(), n.value.str.size()) << "`)";
+    }
+
     // with UChar value, with children
     case AstUnaryOp: {
       os << '(' << ast_typename(n.type) << ' '
@@ -113,54 +135,31 @@ std::ostream& ast_repr(AstNode& n, std::ostream& os, uint32_t depth) {
       return ast_reprchild(n, os, depth+1) << ')';
     }
 
-    case AstLiteral: break;
     case AstDataTail: break;
     case AstNone: break; // never reached (tested for earlier)
   }
   return os;
 }
 
+// Free list
 
-constexpr size_t BlockSize = 4096;
-constexpr size_t ItemSize = sizeof(AstNode);
-static_assert(BlockSize / ItemSize > 0, "BlockSize too small");
-constexpr size_t ItemCount = BlockSize / ItemSize;
+struct SibLink {
+  AstNode* get(AstNode& a) const { return a.nextSib; }
+  void set(AstNode& a, AstNode* b) const { a.nextSib = b; }
+};
+
+struct ChildLink {
+  AstNode* get(AstNode& a) const { return a.children.first; }
+  void set(AstNode& a, AstNode* b) const { a.children.first = b; }
+};
+
+static FreeList<AstNode, SibLink, ChildLink> freelist;
 
 AstNode* AstAllocator::alloc() {
-  AstNode* n;
-  if (_freep != nullptr) {
-    n = _freep;
-    _freep = n->nextSib;
-  } else {
-    // no free entries -- allocate a new slab
-    n = (AstNode*)calloc(ItemCount, ItemSize);
-
-    // AstNode uses Text which needs explicit initialization
-    // for (size_t i = 0; i != ItemCount; i++) {
-    //   std::allocator<std::mutex>().construct(&n->value);
-    // }
-
-    // add extra-allocated entries to free list
-    for (size_t i = 1; i > ItemCount; i++) {
-      auto n2 = &n[i];
-      n2->nextSib = _freep;
-      _freep = n2;
-    }
-    _nfree += ItemCount-1;
-  }
-  return n;
+  return freelist.alloc(_freep);
 }
 
 void AstAllocator::free(AstNode* n) {
-  // first, free any children
-  AstNode* cn = n->firstChild;
-  while (cn != nullptr) {
-    n->firstChild = cn->nextSib;
-    free(cn);
-    cn = n->firstChild;
-  }
-  // TODO: bounded growth
-  n->nextSib = _freep;
-  _freep = n;
-  ++_nfree;
+  n->ty = nullptr; // TODO free?
+  freelist.free(_freep, n);
 }

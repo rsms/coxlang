@@ -1,5 +1,6 @@
 #include "parse.h"
 #include "readfile.h"
+#include "wasm.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -78,41 +79,46 @@ void reportParseErr(Parser& p, const Err& err, const char* srcp, size_t srcz) {
   exit(1);
 }
 
-
 int main(int argc, char const *argv[]) {
-
+  // Read input from stdin or a file
   FILE* f = stdin;
   if ((argc > 1) && !(f = fopen(argv[1], "r"))) {
     err(1, "%s", argv[0]);
   }
-
   size_t srcz = 0;
   char* srcp = readfile(f, srcz, 102400000);
   if (!srcp) {
     err(1, "%s", argv[0]);
   }
+  fclose(f); f = nullptr;
 
-  IStr::WeakSet strings;
-  AstAllocator astalloc;
-  Parser p(srcp, srcz, strings);
-  Err err;
+  // We use these for the entire thread memory space
+  IStr::WeakSet strings;  // string interning
+  AstAllocator  astalloc; // AST allocator
+
+  // We use this for the entire module
+  Module module;
+
+  // We use these for one translation unit
+  Err    error;
+  Parser p(srcp, srcz, strings, module);
 
   // package
-  PkgDef pkg;
-  err = p.parsePkg(pkg);
-  if (!err.ok()) {
-    reportParseErr(p, err, srcp, srcz);
+  AstPkgDecl pkgdecl;
+  error = p.parsePkgDecl(pkgdecl);
+  if (!error.ok()) {
+    reportParseErr(p, error, srcp, srcz);
   }
-  cout << "package: " << pkg.name << endl;
-  if (!pkg.doc.empty()) {
-    cout << pkg.doc << endl;
+  cout << "package: " << pkgdecl.name << endl;
+  if (!pkgdecl.doc.empty()) {
+    cout << pkgdecl.doc << endl;
   }
 
   // imports
   Imports imps;
-  err = p.parseImports(astalloc, imps);
-  if (!err.ok()) {
-    reportParseErr(p, err, srcp, srcz);
+  error = p.parseImports(astalloc, imps);
+  if (!error.ok()) {
+    reportParseErr(p, error, srcp, srcz);
   }
   if (imps.empty()) {
     cout << "no imports" << endl;
@@ -136,11 +142,33 @@ int main(int argc, char const *argv[]) {
   // AST
   auto prog = astalloc.alloc();
   prog->type = AstProgram;
-  err = p.parseProgram(astalloc, *prog);
-  if (!err.ok()) {
-    reportParseErr(p, err, srcp, srcz);
+  error = p.parseProgram(astalloc, *prog);
+  if (!error.ok()) {
+    reportParseErr(p, error, srcp, srcz);
   }
   ast_repr(*prog, cout) << endl;
+
+  // WASM codegen
+  wasm::Buf wbuf;
+  error = wasm::emit_module(wbuf, *prog);
+  if (!error.ok()) {
+    cerr << "genwasm: " << error.message() << endl;
+    abort();
+  }
+
+  // Write output
+  if (argc > 2) {
+    FILE* of = fopen(argv[2], "w");
+    if (of == nullptr) {
+      err(1, "%s", argv[0]);
+    }
+    printf("write WASM code to %s\n", argv[2]);
+    if (fwrite((const void*)wbuf.data(), wbuf.size(), 1, of) == 0) {
+      err(1, "%s", argv[0]);
+    }
+    fclose(f); f = nullptr;
+  }
+
 
   astalloc.free(prog);
   free(srcp);

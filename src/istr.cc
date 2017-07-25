@@ -36,7 +36,7 @@ IStr IStr::Set::get(const char* s, uint32_t len) {
   auto P = _set.emplace(obj);
   if (P.second) {
     // Did insert. Update inserted pointer with the address of a new IStr::Imp
-    obj = IStr::Imp::create(s, len);
+    obj = IStr::Imp::create(s, len, sw._hash);
     IStr::Imp** vp = const_cast<IStr::Imp**>(&*P.first); // IStr::Imp*const*
     *vp = obj;
   } else {
@@ -66,7 +66,7 @@ IStr IStr::WeakSet::get(const char* s, uint32_t len) {
   if (P.second || !P.first->self) {
     // Did insert. Update inserted pointer with the address of a new IStr::Imp
     // printf("intern MISS (%s) '%s'\n", (!P.first->self ? "reuse-slot" : "new-slot"), s);
-    obj = IStr::Imp::create(s, len);
+    obj = IStr::Imp::create(s, len, sw._hash);
     WeakRef* ws = ((WeakRef*)(&*P.first));
     ws->self = obj;
     ws->_bind();

@@ -1,17 +1,12 @@
 #include "lex.h"
+#include "strtoint.h"
 #include <iostream>
 #include <stack>
 #include <deque>
 #include <assert.h>
 
-#if !defined(__EXCEPTIONS) || !__EXCEPTIONS
-  #include "utf8/unchecked.h"
-  namespace UTF8 = utf8::unchecked;
-#else
-  #include "utf8/checked.h"
-  namespace UTF8 = utf8;
-#endif
-
+// When defined, unicode codepoints are validated:
+// #define VALIDATE_UNICODE
 
 #if __clang__
   #define fallthrough [[clang::fallthrough]]
@@ -19,7 +14,7 @@
   #define fallthrough (void(0))
 #endif
 
-
+using std::string;
 using std::cerr;
 using std::endl;
 #define DBG(...) cerr << "[" << __BASE_FILE__ << "] " <<  __VA_ARGS__ << endl;
@@ -28,6 +23,8 @@ using std::endl;
 #define FOREACH_CHAR \
   while (_p != _end) switch (nextChar())
 
+#define FOREACH_BYTE \
+  while (_p != _end) switch (nextByte())
 
 #include "text.def"
 
@@ -57,7 +54,7 @@ struct TokQueue {
   struct Entry {
     Token  tok;
     SrcLoc loc;
-    Text   val;
+    string val;
   };
 
   std::deque<Entry> _q;
@@ -68,17 +65,17 @@ struct TokQueue {
   bool empty() const { return _q.empty(); }
 
   // add to end of queue
-  void enqueueLast(Token tok, const SrcLoc& loc, const Text& val) {
+  void enqueueLast(Token tok, const SrcLoc& loc, const string& val) {
     _q.emplace_back(Entry{tok, loc, val});
   }
 
   // add to beginning of queue
-  void enqueueFirst(Token tok, const SrcLoc& loc, const Text& val) {
+  void enqueueFirst(Token tok, const SrcLoc& loc, const string& val) {
     _q.emplace_front(Entry{tok, loc, val});
   }
 
   // dequeue the token+srcloc that's first in line
-  void dequeueFirst(Token& tok, SrcLoc& loc, Text& val) {
+  void dequeueFirst(Token& tok, SrcLoc& loc, string& val) {
     auto& ent = _q.front();
     tok = ent.tok;
     loc = std::move(ent.loc);
@@ -105,6 +102,7 @@ struct Lex::Imp {
   SrcLoc      _srcLoc;
   Err         _err;
   Stack       _stack;
+  string      _strval; // value of interpreted literals (string and char)
 
   Imp(const char* p, size_t z)
     : _begin{p}
@@ -114,24 +112,31 @@ struct Lex::Imp {
     , _lineBegin{p}
   {}
 
+  UChar nextChar() {
+    return (_c = (_p < _end ? text::decodeUTF8Char(_p, _end) : UCharMax));
+  }
+
+  char nextByte() {
+    return (_c = (_p < _end ? *_p++ : 0));
+  }
+
+  UChar peekNextChar() {
+    auto p = _p;
+    return p < _end ? text::decodeUTF8Char(p, _end) : UCharMax;
+  }
 
   void undoChar() {
     _p -= text::UTF8SizeOf(_c);
   }
 
-  UChar nextChar() {
-    return _c = _p < _end ? UTF8::next(_p, _end) : UCharMax;
-  }
-
-  UChar peekNextChar() {
-    auto p = _p;
-    return p < _end ? UTF8::next(p, _end) : UCharMax;
+  void undoByte() {
+    _p--;
   }
 
   // UChar peekNextNonSpaceChar() {
   //   auto p = _p;
   //   UChar c;
-  //   while (p != _end) switch ((c = UTF8::next(p, _end))) {
+  //   while (p != _end) switch ((c = text::decodeUTF8Char(p, _end))) {
   //     CTRL_CASES
   //     WHITESPACE_CASES
   //       break;
@@ -153,7 +158,7 @@ struct Lex::Imp {
   //   SrcLoc loc = _srcLoc;
   //   loc.offset = _p - _begin;
   //   loc.column = _p - _lineBegin;
-  //   while (p != _end) switch ((c = UTF8::next(p, _end))) {
+  //   while (p != _end) switch ((c = text::decodeUTF8Char(p, _end))) {
   //     CTRL_CASES
   //     WHITESPACE_CASES
   //       break;
@@ -186,12 +191,12 @@ struct Lex::Imp {
     return _tok = t;
   }
 
-  void enqueueToken(Token t, const Text& value) {
+  void enqueueToken(Token t, const string& value) {
     updateSrcLocLength(t, _srcLoc);
     _tokQueue.enqueueLast(t, _srcLoc, value);
   }
 
-  void enqueueTokenFirst(Token t, const Text& value) {
+  void enqueueTokenFirst(Token t, const string& value) {
     updateSrcLocLength(t, _srcLoc);
     _tokQueue.enqueueFirst(t, _srcLoc, value);
   }
@@ -243,7 +248,7 @@ struct Lex::Imp {
   //   return false;
   // }
 
-  Token next(Text& value) {
+  Token next() {
     if (_tok == '\n') {
       // Increase line if previous token was a linebreak. This way linebreaks are
       // semantically at the end of a line, rather than at the beginning of a line.
@@ -252,20 +257,20 @@ struct Lex::Imp {
 
     // First, return the next queued token before reading more
     if (!_tokQueue.empty()) {
-      _tokQueue.dequeueFirst(_tok, _srcLoc, value);
+      _tokQueue.dequeueFirst(_tok, _srcLoc, _strval);
       return _tok;
     }
 
     beginTok();
-    value.clear();
-      // Set source location and clear value
+    _strval.clear();
+      // Set source location and clear _strval
 
     // The root switch has a dual purpose: Initiate tokens and reading symbols.
     // Because symbols are pretty much "anything else", this is the most
     // straight-forward way.
     bool isReadingIdent = false;
     #define ADDSYM_OR \
-      if (isReadingIdent) { value += _c; break; } else
+      if (isReadingIdent) { break; } else
     #define ENDSYM_OR \
       if (isReadingIdent) { undoChar(); return setTok(Identifier); } else
 
@@ -281,7 +286,7 @@ struct Lex::Imp {
         //   • one of the keywords break, continue, fallthrough, or return
         //   • one of the operators and delimiters ++, --, ), ], or }
         if (shouldInsertSemicolon()) {
-          enqueueToken('\n', value);
+          enqueueToken('\n', _strval);
           return setTok(';');
         } else {
           return setTok('\n');
@@ -300,7 +305,7 @@ struct Lex::Imp {
         auto popTok = _stack.top().t;
         _stack.pop();
         switch (popTok) {
-          case ITextLit:  return readTextLit(value, /*isInterpolated=*/true);
+          case ITextLit:  return readTextLit(/*isInterpolated=*/true);
           case '(':       return setTok(_c);
           default:        assert(!"invalid stack state"); break;
         }
@@ -311,27 +316,27 @@ struct Lex::Imp {
       case '<': case '>':
       case ',': case ';':
       case '+': case '*':
-      case '!':
-      case '=':
+      case '!': case '@':
+      case '=': case '#':
       // TODO: other operators, like &
         ENDSYM_OR return setTok(_c);
 
-      case ':':  ENDSYM_OR return readColonOrAutoAssign(value);
-      case '-':  ENDSYM_OR return readMinusOrRArr(value);
-      case '/':  ENDSYM_OR return readSolidus(value);
-      case '.':  ENDSYM_OR return readDot(value); // "." | ".." | "..." | "."<float>
+      case ':':  ENDSYM_OR return readColonOrAutoAssign();
+      case '-':  ENDSYM_OR return readMinusOrRArr();
+      case '/':  ENDSYM_OR return readSolidus();
+      case '.':  ENDSYM_OR return readDot(); // "." | ".." | "..." | "."<float>
       case U'\u2702':   ENDSYM_OR return readDataTail(); // "✂" [^\n]* \n
 
-      case '0':         ADDSYM_OR return readZeroLeadingNumLit(value);
-      case '1' ... '9': ADDSYM_OR return readDecIntLit(value);
+      case '0':         ADDSYM_OR return readZeroLeadingNumLit();
+      case '1' ... '9': ADDSYM_OR return readDecIntLit();
 
-      case '\'':  return readCharLit(value);
-      case '"':   return readTextLit(value, /*isInterpolated=*/false);
+      case '\'':  return readCharLit();
+      case '"':   return readTextLit(/*isInterpolated=*/false);
+      case '`':   return readRawStringLit();
 
       default: {
         if (text::isValidChar(_c)) {
           isReadingIdent = true;
-          value += _c;
         } else {
           return error("Illegal character "+text::repr(_c)+" in input");
         }
@@ -343,7 +348,7 @@ struct Lex::Imp {
   }
 
 
-  Token readColonOrAutoAssign(Text&) {
+  Token readColonOrAutoAssign() {
     // ColonOrAutoAssign = ":" | AutoAssign
     // AutoAssign        = ":="
     switch (nextChar()) {
@@ -354,7 +359,7 @@ struct Lex::Imp {
   }
 
 
-  Token readMinusOrRArr(Text&) {
+  Token readMinusOrRArr() {
     // MinusOrRArr = "-" | RArr
     // RArr        = "->"
     switch (nextChar()) {
@@ -365,7 +370,7 @@ struct Lex::Imp {
   }
 
 
-  // Token readEq(Text&) {
+  // Token readEq() {
   //   // Eq   = "=" | EqEq
   //   // EqEq = "=="
   //   switch (nextChar()) {
@@ -376,7 +381,7 @@ struct Lex::Imp {
   // }
 
 
-  Token readSolidus(Text& value) {
+  Token readSolidus() {
     // Solidus        = "/" | LineComment | GeneralComment
     // LineComment    = "//" <any except LF> <LF>
     // GeneralComment = "/*" <any> "*/"
@@ -391,10 +396,10 @@ struct Lex::Imp {
         bool insertSemic = shouldInsertSemicolon();
 
         if (_c == '/') {
-          readLineComment(value);
+          readLineComment();
         } else {
           bool hasNewline;
-          if (readGeneralComment(value, hasNewline) == Error) {
+          if (readGeneralComment(hasNewline) == Error) {
             return _tok;
           }
           if (insertSemic) {
@@ -405,7 +410,7 @@ struct Lex::Imp {
         }
 
         if (insertSemic) {
-          enqueueToken(_tok, value);
+          enqueueToken(_tok, _strval);
           return setTok(';');
         }
 
@@ -417,12 +422,11 @@ struct Lex::Imp {
   }
 
 
-  Token readGeneralComment(Text& value, bool& hasNewline) {
+  Token readGeneralComment(bool& hasNewline) {
     // Enter at "/*", leave at "*/"
     hasNewline = false;
     FOREACH_CHAR {
       case '\n': {
-        value += _c;
         hasNewline = true;
         incrLine();
         break;
@@ -436,7 +440,6 @@ struct Lex::Imp {
       }
       default: {
         assert(_c != UCharMax); // FOREACH_CHAR should protect against this case
-        value += _c;
         break;
       }
     }
@@ -444,11 +447,11 @@ struct Lex::Imp {
   }
 
 
-  Token readLineComment(Text& value) {
+  Token readLineComment() {
     // Enter at "//"
     FOREACH_CHAR {
       case '\n': undoChar(); return setTok(LineComment);
-      default:   value += _c; break;
+      default:   break;
     }
     return setTok(LineComment);
   }
@@ -471,30 +474,33 @@ struct Lex::Imp {
   // bool readTextInterpolation()
 
 
-  template <UChar TermC>
-  bool readCharLitEscape(Text& value) {
-    // EscapedUnicodeChar  = "\n" | "\r" | "\t" | "\\" | <TermC>
-    //                       | LittleXUnicodeValue
-    //                       | LittleUUnicodeValue
-    //                       | BigUUnicodeValue
+  template <char TermC>
+  bool readCharLitEscape() {
+    // EscapedUnicodeChar  = "\a" | "\b" | "\f" | "\n" | "\r" | "\t"
+    //                     | "\v" | "\\" | <TermC>
+    //                     | LittleXUnicodeValue
+    //                     | LittleUUnicodeValue
+    //                     | BigUUnicodeValue
     // LittleXUnicodeValue = "\x" HexDigit HexDigit
     // LittleUUnicodeValue = "\u" HexDigit HexDigit HexDigit HexDigit
     // BigUUnicodeValue    = "\U" HexDigit HexDigit HexDigit HexDigit
     //                            HexDigit HexDigit HexDigit HexDigit
-    switch (nextChar()) {
-      case 'n': { value += '\n'; break; }
-      case 'r': { value += '\r'; break; }
-      case 't': { value += '\t'; break; }
+    switch (nextByte()) {
+      case 'a': { _strval += '\x07'; break; } // alert or bell
+      case 'b': { _strval += '\x08'; break; } // backspace
+      case 'f': { _strval += '\x0C'; break; } // form feed
+      case 'n': { _strval += '\x0A'; break; } // line feed or newline
+      case 'r': { _strval += '\x0D'; break; } // carriage return
+      case 't': { _strval += '\x09'; break; } // horizontal tab
+      case 'v': { _strval += '\x0b'; break; } // vertical tab
       case TermC:
-      case '\\': { value += _c; break; }
-      case 'x': { return readHexUChar(2, value); }
-      case 'u': { return readHexUChar(4, value); }
-      case 'U': { return readHexUChar(8, value); }
+      case '\\': { _strval += (char)_c; break; }
+      case 'x': { return readHexUChar(2); }
+      case 'u': { return readHexUChar(4); }
+      case 'U': { return readHexUChar(8); }
       default: {
         error(
-          "Unexpected escape sequence '\\' "+
-          text::repr(_c)+
-          " in character literal"
+          "Unexpected character escape sequence '\\" + text::repr(_c) + "'"
         );
         return false;
       }
@@ -503,7 +509,18 @@ struct Lex::Imp {
   }
 
 
-  Token readCharLit(Text& value) {
+  void assignStrValTrimmed() {
+    // Copies bytes from _begin[_srcLoc.offset] until _p to _strval
+    const char* p = &_begin[_srcLoc.offset];
+    size_t len = (_p - _begin) - _srcLoc.offset;
+    assert(len > 1);
+    p++;
+    len -= 2;
+    _strval.assign(p, len);
+  }
+
+
+  Token readCharLit() {
     // CharLit = "'" ( UnicodeChar | EscapedUnicodeChar<'> ) "'"
     switch (nextChar()) {
       case UCharMax:
@@ -513,9 +530,11 @@ struct Lex::Imp {
       case '\'':
         return error("Empty character literal or unescaped ' in character literal");
       case '\\':
-        if (!readCharLitEscape<'\''>(value)) return _tok; break;
-      default:
-        value = _c; break;
+        if (!readCharLitEscape<'\''>()) return _tok; break;
+      default: {
+        assignStrValTrimmed(); // '...' => ...
+        break;
+      }
     }
     switch (nextChar()) {
       case '\'':      return setTok(CharLit);
@@ -524,10 +543,42 @@ struct Lex::Imp {
   }
 
 
-  Token readTextLit(Text& value, bool isInterpolated) {
+  Token readRawStringLitBuf() {
+    // Called from readRawStringLit when we encounter a \r
+    assignStrValTrimmed(); // `...\r => ...
+    while (_p != _end) switch (nextByte()) {
+      case '`':  return setTok(RawStringLit);
+      case '\r': break; // ignore
+      default: _strval += (char)_c; break; // store
+    }
+    return error("Unterminated raw string literal");
+  }
+
+
+  Token readRawStringLit() {
+    // RawStringLit = "`" { UnicodeChar | NewLine } "`"
+    while (_p != _end) switch (nextByte()) {
+      case '`': return setTok(RawStringLit);
+      case '\r': {
+        // \r is ignore because Windows, so we need to copy  all bytes read
+        // so far into _strval and then ignore this byte.
+        return readRawStringLitBuf();
+      }
+      default: {
+        if (!_strval.empty()) {
+          _strval += (char)_c;
+        }
+        break;
+      }
+    }
+    return error("Unterminated raw string literal");
+  }
+
+
+  Token readTextLit(bool isInterpolated) {
     // TextLit = '"' ( UnicodeChar | EscapedUnicodeChar<"> )* '"'
     FOREACH_CHAR {
-      LINEBREAK_CASES return error("Illegal character in character literal");
+      LINEBREAK_CASES return error("Illegal character in string literal");
       case '"': {
         if (isInterpolated) {
           return setTok(ITextLitEnd);
@@ -543,23 +594,39 @@ struct Lex::Imp {
           _p += 2; // skip past the "\(" which we previously parsed
           return _tok;
         }
-        if (!readCharLitEscape<'"'>(value)) return _tok;
+        if (!readCharLitEscape<'"'>()) {
+          return _tok;
+        }
         break;
       }
-      default:        value += _c; break;
+      default: {
+
+        #ifdef VALIDATE_UNICODE
+        switch (text::category(_c)) {
+          case text::Category::Unassigned:
+          case text::Category::NormativeCs: {
+            error(string{"Invalid Unicode character "} + text::repr(_c));
+            return false;
+          }
+          default: break;
+        }
+        #endif // VALIDATE_UNICODE
+
+        text::appendUTF8(_strval, _c);
+        break;
+      }
     }
-    return error("Unterminated character literal at end of input");
+    return error("Unterminated string literal");
   }
 
 
-  bool readHexUChar(int nbytes, Text& value) {
-    string s;
-    s.reserve(nbytes);
+  bool readHexUChar(int nbytes) {
+    const char* beginp = _p + 1;
     int i = 0;
     while (i++ != nbytes) {
-      switch (nextChar()) {
+      switch (nextByte()) {
         case '0' ... '9': case 'A' ... 'F': case 'a' ... 'f': {
-          s += (char)_c; break;
+          break;
         }
         default: {
           error("Invalid Unicode sequence");
@@ -567,18 +634,27 @@ struct Lex::Imp {
         }
       }
     }
-    UChar c = std::stoul(s, 0, 16);
+
+    UChar c;
+    if (!strtou32(beginp, nbytes, 16, c)) {
+      assert(!"strtou32");
+    }
+
+    #ifdef VALIDATE_UNICODE
     switch (text::category(c)) {
       case text::Category::Unassigned:
       case text::Category::NormativeCs: {
         error(
-          string{"Invalid Unicode character \\"} + (nbytes == 4 ? "u" : "U") + s
+          string{"Invalid Unicode character \\"} +
+          (nbytes == 4 ? "u" : "U") + string{beginp, (size_t)nbytes}
         );
         return false;
       }
       default: break;
     }
-    value += c;
+    #endif // VALIDATE_UNICODE
+
+    text::appendUTF8(_strval, c);
     return true;
   }
 
@@ -590,14 +666,14 @@ struct Lex::Imp {
   // hex_lit     = "0" ( "x" | "X" ) hex_digit { hex_digit }
   //
 
-  Token readZeroLeadingNumLit(Text& value) {
-    value = _c; // enter at _c='0'
-    FOREACH_CHAR {
-      case 'X': case 'x': return readHexIntLit(value);
-      case '.':           return readFloatLitAtDot(value);
-      OCTNUM_CASES        return readOctIntLit(value);
+  Token readZeroLeadingNumLit() {
+    // enter at _c='0'
+    FOREACH_BYTE {
+      case 'X': case 'x': return readHexIntLit();
+      case '.':           return readFloatLitAtDot();
+      OCTNUM_CASES        return readOctIntLit();
       default: {
-        undoChar();
+        undoByte();
         return setTok(DecIntLit); // special case '0'
       }
     }
@@ -605,44 +681,47 @@ struct Lex::Imp {
   }
 
 
-  Token readOctIntLit(Text& value) {
-    value = _c; // Enter at ('1' ... '7')
-    FOREACH_CHAR {
-      OCTNUM_CASES { value += _c; break; }
+  Token readOctIntLit() {
+    // Enter at ('1' ... '7')
+    FOREACH_BYTE {
+      OCTNUM_CASES { break; }
       case '.': {
-        value.insert(0, 1, '0');
-        return readFloatLitAtDot(value);
+        // value.insert(0, 1, '0');
+        return readFloatLitAtDot();
       }
-      default: { undoChar(); return setTok(OctIntLit); }
+      default: {
+        undoByte();
+        return setTok(OctIntLit);
+      }
     }
     return setTok(OctIntLit);
   }
 
 
-  Token readDecIntLit(Text& value) {
-    value = _c; // Enter at ('1' ... '9')
-    FOREACH_CHAR {
-      DECNUM_CASES { value += _c; break; }
-      case 'e': case 'E':    return readFloatLitAtExp(value);
-      case '.':              return readFloatLitAtDot(value);
-      default: { undoChar(); return setTok(DecIntLit); }
+  Token readDecIntLit() {
+    // Enter at ('1' ... '9')
+    FOREACH_BYTE {
+      DECNUM_CASES { break; }
+      case 'e': case 'E':    return readFloatLitAtExp();
+      case '.':              return readFloatLitAtDot();
+      default: { undoByte(); return setTok(DecIntLit); }
     }
     return setTok(DecIntLit);
   }
 
 
-  Token readHexIntLit(Text& value) {
-    value.clear(); // ditch '0'. Enter at "x" in "0xN..."
-    FOREACH_CHAR {
-      HEXNUM_CASES { value += _c; break; }
-      default: { undoChar(); return setTok(HexIntLit); }
+  Token readHexIntLit() {
+    // value.clear(); // ditch '0'. Enter at "x" in "0xN..."
+    FOREACH_BYTE {
+      HEXNUM_CASES { break; }
+      default: { undoByte(); return setTok(HexIntLit); }
     }
     return error("Incomplete hex literal"); // special case: '0x' is last of input
   }
 
 
-  Token readDot(Text& value) {
-    value = _c; // enter at "."
+  Token readDot() {
+    // enter at "."
     switch (nextChar()) {
       case UCharMax: return error("Unexpected '.' at end of input");
       case U'.': {
@@ -661,55 +740,58 @@ struct Lex::Imp {
           return setTok(DotDot);
         }
       }
-      DECNUM_CASES         return readFloatLitAtDot(value);
+      DECNUM_CASES         return readFloatLitAtDot();
       default: undoChar(); return setTok(U'.');
     }
   }
 
 
-  Token readFloatLitAtDot(Text& value) {
-    value += _c; // else enter at "<decnum>."
+  Token readFloatLitAtDot() {
+    // else enter at "<decnum>."
+    //
     // float_lit = decimals "." [ decimals ] [ exponent ] |
     //             decimals exponent |
     //             "." decimals [ exponent ]
     // decimals  = decimal_digit { decimal_digit }
     // exponent  = ( "e" | "E" ) [ "+" | "-" ] decimals
-    FOREACH_CHAR {
-      DECNUM_CASES { value += _c; break; }
-      case 'e': case 'E':    return readFloatLitAtExp(value);
-      default: { undoChar(); return setTok(FloatLit); }
+    FOREACH_BYTE {
+      DECNUM_CASES { break; }
+      case 'e': case 'E':    return readFloatLitAtExp();
+      default: { undoByte(); return setTok(FloatLit); }
     }
     return setTok(FloatLit); // special case '0.'
   }
 
 
-  Token readFloatLitAtExp(Text& value) {
-    value += _c; // enter at "<decnum>[E|e]"
+  Token readFloatLitAtExp() {
+    // enter at "<decnum>[E|e]", expect: [ "+" | "-" ] decimals
     if (_p == _end) return error("Incomplete float exponent");
-    switch (nextChar()) {
-      case '+': case '-': { value += _c; break; }
-      DECNUM_CASES { value += _c; break; }
+    switch (nextByte()) {
+      DECNUM_CASES case '+': case '-': break;
       default: goto illegal_exp_value;
     }
 
     if (_c == '+' || _c == '-') {
       if (_p == _end) return error("Incomplete float exponent");
-      switch (nextChar()) {
-        DECNUM_CASES { value += _c; break; }
+      switch (nextByte()) {
+        DECNUM_CASES { break; }
         default: { goto illegal_exp_value; }
       }
     }
 
-    FOREACH_CHAR {
-      DECNUM_CASES { value += _c; break; }
-      default: { undoChar(); return setTok(FloatLit); }
+    FOREACH_BYTE {
+      DECNUM_CASES break;
+      default: {
+        undoByte();
+        return setTok(FloatLit);
+      }
     }
 
     return setTok(FloatLit); // special case '<decnum>[E|e]?[+|-]?<decnum>'
 
    illegal_exp_value:
     error("Illegal value '" + text::repr(_c) + "' for exponent in float literal");
-    undoChar();
+    undoByte();
     return _tok;
   }
 
@@ -727,17 +809,17 @@ bool Lex::isValid() const {
 const Err& Lex::lastError() const { return self->_err; }
 Err&& Lex::takeLastError() { return std::move(self->_err); }
 
-Token Lex::next(Text& value) {
-  return self->next(value);
+Token Lex::next() {
+  return self->next();
 }
-// bool Lex::nextIfEq(Token pred, Text& value) {
-//   return self->nextIfEq(pred, value);
+// bool Lex::nextIfEq(Token pred) {
+//   return self->nextIfEq(pred);
 // }
 Token Lex::current() const {
   return self->_tok;
 }
-void Lex::undoCurrent(const Text& value) {
-  self->enqueueTokenFirst(self->_tok, value);
+void Lex::undoCurrent() {
+  self->enqueueTokenFirst(self->_tok, self->_strval);
 }
 Token Lex::queuedToken() {
   return self->_tokQueue.empty() ? Lex::Error : self->_tokQueue.first().tok;
@@ -757,6 +839,17 @@ const char* Lex::byteTokValue(size_t& z) const {
   return self->_begin + self->_srcLoc.offset;
 }
 
+const std::string& Lex::interpretedTokValue() const {
+  return self->_strval;
+}
+
+int Lex::tokValueCmp(const char* p, size_t len) const {
+  if (self->_srcLoc.length == len) {
+    return memcmp(p, self->_begin + self->_srcLoc.offset, len);
+  }
+  return len < self->_srcLoc.length ? -1 : 1;
+}
+
 void Lex::copyTokValue(string& s) const {
   s.assign(self->_begin + self->_srcLoc.offset, self->_srcLoc.length);
 }
@@ -765,7 +858,7 @@ string Lex::byteStringTokValue() const {
   return {self->_begin + self->_srcLoc.offset, self->_srcLoc.length};
 }
 
-string Lex::repr(Token t, const Text& value) {
+string Lex::repr(Token t, const string& value) {
   switch (t) {
     #define T(Name, HasValue) case Lex::Tokens::Name: { \
       return (HasValue && !value.empty()) ? \

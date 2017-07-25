@@ -127,7 +127,6 @@ int main(/*int argc, char const *argv[]*/) {
 
   go2([]{
     rxlog("<task 1>: enter");
-
     SockAddr raddr; // inet 127.0.0.1:1337
     NetChan c = netsock(NetInet4, NetStream, 0, SockDefault, nullptr, &raddr, 0);
     if (!c) {

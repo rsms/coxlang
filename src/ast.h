@@ -2,6 +2,8 @@
 #include "srcloc.h"
 #include "text.h"
 #include "istr.h"
+#include "types.h"
+#include "slist.h"
 #include <string>
 
 // Type of AST nodes.
@@ -10,10 +12,11 @@
 #define RX_AST_NODES(_) \
   /* Name */ \
   _( Program ) \
-  _( BoolConst ) \
+  _( Bool ) \
   _( IntConst ) \
   _( DataTail ) \
-  _( Literal ) \
+  _( String ) \
+  _( RawString ) \
   _( Ident ) \
   _( QualIdent ) \
   _( ConstDecl ) \
@@ -27,6 +30,7 @@
   _( MethodDecl ) \
   _( FuncSig ) \
   _( ParamDecl ) \
+  _( Block ) \
   _( UnaryOp )  /*  op = value.i  */ \
 
 #define RX_AST_NODES_DEFINED
@@ -40,60 +44,34 @@ enum AstType {
 
 const std::string& ast_typename(AstType);
 
+// package declaration at top of source files
+struct AstPkgDecl {
+  IStr   name;    // name of the package (an Identifier)
+  Text   doc;     // any comment written directly above `package`
+  SrcLoc srcloc;  // location in source
+};
+
 // Represents a node in a tree
 struct AstNode {
   AstType  type;   // type of node
   SrcLoc   loc;    // location in source
+
+  // value
   union {
-    IStr     str;   // i.e. for an Ident, this is its name
-    Text     text;  // i.e. for TextLit, this is its value
+    IStr     str;
     uint64_t i;
     double   f;
   } value;
 
-  // Sibling link (used for a child and for a free node)
-  AstNode* nextSib = nullptr;
+  const Type*        ty = nullptr; // DEPRECATED in favor for typeDef
+  TypeDef*           typeDef = nullptr;
 
-  // Children list
-  AstNode* firstChild = nullptr;
-  AstNode* lastChild = nullptr;
+  AstNode*           nextSib = nullptr; // Sibling link (children and free-list)
+  SListIntr<AstNode> children; // Children list
 
-  // Add a node to end of child list
-  void appendChild(AstNode& n) {
-    if (firstChild == nullptr) {
-      firstChild = &n;
-    } else {
-      lastChild->nextSib = &n;
-    }
-    lastChild = &n;
-    lastChild->nextSib = nullptr;
-  }
-
-  // Add a node to beginning of child list
-  void prependChild(AstNode& n) {
-    n.nextSib = firstChild;
-    firstChild = &n;
-    if (lastChild == nullptr) {
-      lastChild = &n;
-    }
-  }
-
-  // Add a variable number of nodes, starting with `firstn`.
-  // Nodes are expected to be linked by ->nextSib, and null-terminated.
-  void appendChildren(AstNode& firstn) {
-    AstNode* n = &firstn;
-
-    if (firstChild == nullptr) {
-      lastChild = firstChild = n;
-      n = n->nextSib;
-    }
-
-    while (n != nullptr) {
-      lastChild->nextSib = n;
-      lastChild = n;
-      n = n->nextSib;
-    }
-  }
+  void appendChild(AstNode& cnp) { children.append(cnp); }
+  void prependChild(AstNode& cnp) { children.prepend(cnp); }
+  void appendChildList(AstNode& first) { children.appendList(first); }
 };
 
 
@@ -120,7 +98,9 @@ struct AstAllocator {
   // RX_AST_NODES(M)
   // #undef M
 
+  AstAllocator() = default;
+  AstAllocator(AstAllocator&&) = default;
 private:
+  AstAllocator(const AstAllocator&) = delete;
   AstNode* _freep = nullptr; // free nodes
-  size_t   _nfree = 0;       // number of free nodes
 };

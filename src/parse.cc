@@ -2,7 +2,7 @@
 #include "lex.h"
 #include "defer.h"
 #include "langconst.h"
-#include "strtou64.h"
+#include "strtoint.h"
 #include <iostream>
 #include <assert.h>
 
@@ -36,15 +36,16 @@ struct parse {
   Stage          stage;
   Lex            lex;
   IStr::WeakSet& strings;
+  Module&        mod;
   Token          tok;
-  Text           tokval;
   Err            err;    // last error
   AstAllocator*  aa = nullptr;
 
-  parse(const char* sp, size_t len, IStr::WeakSet& strings)
+  parse(const char* sp, size_t len, IStr::WeakSet& s, Module& m)
     : stage{Stage::Pkg}
     , lex{sp, len}
-    , strings{strings}
+    , strings{s}
+    , mod{m}
   {}
 
   Token tokCurr() const {
@@ -53,14 +54,14 @@ struct parse {
 
   // Read and return the next token. Skips leading comments and newlines.
   Token tokNext(bool acceptEnd=false) {
-    while ((tok = lex.next(tokval)) == '\n' ||
+    while ((tok = lex.next()) == '\n' ||
             (tok > Lex::BeginComment && tok < Lex::EndComment) )
     {}
     switch (tok) {
       case Lex::End: {
         if (acceptEnd) {
           #ifdef DEBUG_LOG_TOKEN
-          DEBUG_LOG_TOKEN(Lex::repr(tok, tokval));
+          DEBUG_LOG_TOKEN(Lex::repr(tok, lex.byteStringTokValue()));
           #endif
           return tok;
         }
@@ -77,7 +78,7 @@ struct parse {
       }
     }
     #ifdef DEBUG_LOG_TOKEN
-    DEBUG_LOG_TOKEN(Lex::repr(tok, tokval));
+    DEBUG_LOG_TOKEN(Lex::repr(tok, lex.byteStringTokValue()));
     #endif
     return tok;
   }
@@ -99,7 +100,7 @@ struct parse {
   }
 
   void tokUndo() {
-    lex.undoCurrent(tokval);
+    lex.undoCurrent();
   }
 
   IStr tokIStr() {
@@ -137,7 +138,7 @@ struct parse {
                 << (lex.srcLoc().line+1) << ':'
                 << (lex.srcLoc().column+1) << std::endl
                 << "lex.current() = "
-                << Lex::repr(lex.current(), tokval) << std::endl
+                << Lex::repr(lex.current(), lex.byteStringTokValue()) << std::endl
                 ;
       abort();
     }
@@ -152,8 +153,8 @@ struct parse {
   AstNode* lexend() { return error(Err::OK()); }
 };
 
-Parser::Parser(const char* sp, size_t len, IStr::WeakSet& strings)
-  : _p{new parse{sp, len, strings}} {}
+Parser::Parser(const char* sp, size_t len, IStr::WeakSet& s, Module& m)
+  : _p{new parse{sp, len, s, m}} {}
 
 Parser::~Parser() { if (_p) { delete _p; _p = nullptr; } }
 
@@ -177,9 +178,9 @@ bool parse_semic(parse& p) {
 }
 
 
-AstNode* make_Ident(parse& p) {
+AstNode* make_Ident(parse& p, bool allowKeyword=false) {
   auto s = p.tokIStr();
-  if (lang_isKeyword(s)) {
+  if (!allowKeyword && lang_isKeyword(s)) {
     return p.error("reserved keyword");
   }
   auto n = p.allocNode(AstIdent);
@@ -188,41 +189,73 @@ AstNode* make_Ident(parse& p) {
 }
 
 
-AstNode* parse_Ident(parse& p, bool needToken) {
+AstNode* parse_Ident(parse& p, bool needToken, bool allowKeyword=false) {
   if (needToken) {
     p.tokNext();
   }
   if (p.tokCurr() != Lex::Identifier) {
     return p.error("unexpected token; expecting identifier");
   }
-  return make_Ident(p);
+  return make_Ident(p, allowKeyword);
+}
+
+
+// Makes n into Ident,
+// and if the next token is ".", makes n into and parses a QualIdent.
+bool make_IdentAndMaybeParseQual(parse& p, AstNode& n, bool allowKeyword=false) {
+  assert(p.tokCurr() == Lex::Identifier);
+  n.type = AstIdent;
+  n.value.str = p.tokIStr();
+  if (!allowKeyword && lang_isKeyword(n.value.str)) {
+    p.error("reserved keyword");
+    return false;
+  }
+
+  // qualified?
+  auto n2 = &n;
+  while (p.tokNextIfEq('.')) {
+    n2->type = AstQualIdent;
+    auto n3 = parse_Ident(p, /*needToken=*/true, allowKeyword);
+    if (n3 == nullptr) {
+      return false;
+    }
+    n2->appendChild(*n3);
+    n2 = n3;
+  }
+
+  return true;
 }
 
 
 // Parses Ident or QualIdent
-AstNode* parse_IdentAny(parse& p, bool needToken) {
+AstNode* parse_IdentAny(parse& p, bool needToken, bool allowKeyword=false) {
   if (needToken && p.tokNext() != Lex::Identifier) {
     return p.error("unexpected token; expecting identifier");
   }
-  auto n = make_Ident(p);
-  if (n == nullptr) {
-    return n;
+  auto n = p.allocNode(AstIdent);
+  if (!make_IdentAndMaybeParseQual(p, *n, allowKeyword)) {
+    p.freeNode(n);
+    return nullptr;
   }
-  // qualified?
-  if (p.tokNextIfEq('.')) {
-    auto cn = parse_IdentAny(p, /*needToken=*/true);
-    if (cn == nullptr) {
-      p.freeNode(n);
-      return nullptr;
-    }
-    n->type = AstQualIdent;
-    n->appendChild(*cn);
-  }
+  //auto n = make_Ident(p);
+  //if (n == nullptr) {
+  //  return n;
+  //}
+  //// qualified?
+  //if (p.tokNextIfEq('.')) {
+  //  auto cn = parse_IdentAny(p, /*needToken=*/true);
+  //  if (cn == nullptr) {
+  //    p.freeNode(n);
+  //    return nullptr;
+  //  }
+  //  n->type = AstQualIdent;
+  //  n->appendChild(*cn);
+  //}
   return n;
 }
 
 
-AstNode* parse_Type(parse& p, bool needToken);
+AstNode* parse_Type(parse& p, bool needToken, Type* ty=nullptr);
 
 
 AstNode* make_IntConst(parse& p, int base) {
@@ -248,6 +281,20 @@ AstNode* make_IntConst(parse& p, int base) {
     dlog("strtou64 received \"" << std::string(pch, len) << "\" base=" << base);
     assert(!"strtou64");
   }
+
+  // infer type to smallest int
+  if (n->value.i <= 0x7f) {
+    n->ty = p.mod.types.kI8;
+  } else if (n->value.i <= 0x7fff) {
+    n->ty = p.mod.types.kI16;
+  } else if (n->value.i <= 0x7fffffff) {
+    n->ty = p.mod.types.kI32;
+  } else if (n->value.i <= 0x7ffffffffffffff) {
+    n->ty = p.mod.types.kI64;
+  } else {
+    n->ty = p.mod.types.kU64;
+  }
+
   return n;
 };
 
@@ -289,8 +336,35 @@ AstNode* parse_PrimaryExpr(parse& p, bool needToken) {
     case Lex::Error: return nullptr;
 
     case Lex::Identifier: {
-      return parse_IdentAny(p, /*needToken=*/false);
+      auto n = parse_IdentAny(p, /*needToken=*/false, /*allowKeyword=*/true);
+      if (n == nullptr) {
+        return nullptr;
+      }
+      switch (n->value.str.hash()) {
+        case kLang_true_hash: {
+          n->type = AstBool;
+          n->ty = p.mod.types.kBool;
+          n->value.i = 1;
+          break;
+        }
+        case kLang_false_hash: {
+          n->type = AstBool;
+          n->ty = p.mod.types.kBool;
+          n->value.i = 0;
+          break;
+        }
+        case kLang_type_hash:
+        case kLang_func_hash: {
+          return p.error("unexpected keyword");
+        }
+        default: {
+          // Ident
+          break;
+        }
+      }
+      return n;
     }
+
     case Lex::DecIntLit: {
       return make_IntConst(p, 10);
     }
@@ -303,7 +377,39 @@ AstNode* parse_PrimaryExpr(parse& p, bool needToken) {
 
     // case Lex::FloatLit:
     // case Lex::CharLit:
-    // case Lex::TextLit:
+
+    case Lex::RawStringLit: {
+      auto n = p.allocNode(AstRawString);
+      auto& str = p.lex.interpretedTokValue();
+      if (str.empty()) {
+        size_t len;
+        const char* pch = p.lex.byteTokValue(len);
+        if (len > 2) {
+          n->value.str = IStr(pch+1, len-2);
+        } else {
+          // empty, i.e. "``"
+          n->value.str = IStr();
+        }
+      } else {
+        n->value.str = IStr(str);
+      }
+      n->ty = p.mod.types.allocComplex(TyByteArray, n->value.str.size());
+      return n;
+    }
+
+    case Lex::TextLit: {
+      auto n = p.allocNode(AstString);
+      auto& str = p.lex.interpretedTokValue();
+      if (str.size() < 20) {
+        // intern short strings
+        n->value.str = p.strings.get(str);
+      } else {
+        n->value.str = IStr(str);
+      }
+      n->ty = p.mod.types.allocComplex(TyByteArray, str.size());
+      return n;
+    }
+
     // case Lex::ITextLit:
     default: {
       return p.error("TODO parse_PrimaryExpr: default");
@@ -459,11 +565,16 @@ AstNode* parse_list(
 }
 
 
+static AstNode* parse_IdentNoKeyword(parse& p, bool needToken) {
+  return parse_Ident(p, needToken, /*allowKeyword=*/false);
+}
+
+
 // Parses identifier { "," identifier }
 // Returns first identifier parsed with additional identifiers linked by nextSib.
 // count is set to the total number of identifiers parsed.
 AstNode* parse_IdentList(parse& p, uint64_t& count, bool needToken) {
-  return parse_list(p, count, needToken, parse_Ident);
+  return parse_list(p, count, needToken, parse_IdentNoKeyword);
 }
 
 
@@ -506,20 +617,40 @@ AstNode* parse_FieldDecl(parse& p) {
       p.freeNode(n);
       return nullptr;
     }
+    idn->ty = p.mod.typeofTypename(*idn);
+    p.mod.regUnresolvedType(*idn);
+
     auto pn = p.allocNode(AstPointerType);
     pn->appendChild(*idn);
+    pn->ty = p.mod.types.getPointer(idn->ty);
+    
     n->appendChild(*pn);
+    n->ty = pn->ty;
     return n;
   }
 
-  // Parse: Identifier { "," Identifier }
+  // parse Identifier { "," Identifier }
   uint64_t ncount;
   auto listn = parse_IdentList(p, ncount, /*needToken=*/false);
   if (listn == nullptr) {
     p.freeNode(n);
     return nullptr;
   }
-  n->appendChildren(*listn);
+  n->appendChildList(*listn);
+
+  if (p.tokNext() == ';') {
+    // AnonymousField e.g. `Type`
+    assert(!n->children.empty());
+    assert(n->children.first == n->children.last);
+    p.tokUndo(); // caller expects ';'
+    
+    n->children.first->ty = p.mod.typeofTypename(*n->children.first);
+    p.mod.regUnresolvedType(*n->children.first);
+
+    n->ty = n->children.first->ty;
+    p.mod.regUnresolvedType(*n);
+    return n;
+  }
 
   // We are now finally parsing the type
   auto tn = parse_Type(p, /*needToken=*/false);
@@ -528,12 +659,13 @@ AstNode* parse_FieldDecl(parse& p) {
     return nullptr;
   }
   n->appendChild(*tn);
+  n->ty = tn->ty; // field type
 
   return n;
 }
 
 
-AstNode* parse_StructType(parse& p) {
+AstNode* parse_StructType(parse& p, Type* ty) {
   // StructType = "struct" "{" { FieldDecl ";" } "}"
   //
   // enter at "struct"
@@ -542,17 +674,24 @@ AstNode* parse_StructType(parse& p) {
   }
   auto n = p.allocNode(AstStructType);
 
-  // Parse zero or more FieldDecl
+  ty->tag = TyStruct;
+
+  auto error = [&](const char* msg=nullptr) {
+    p.freeNode(n);
+    if (msg != nullptr) { p.error(msg); }
+    return nullptr;
+  };
+
   while (1) switch (p.tokNext()) {
+    // FieldDecl
     case '*':
     case Lex::Identifier: {
-      auto tn = parse_FieldDecl(p);
+      auto tn = parse_FieldDecl(p, ty);
       if (tn != nullptr && parse_semic(p)) {
         n->appendChild(*tn);
         break;
       }
-      p.freeNode(n);
-      return nullptr;
+      return error();
     }
 
     // end of struct
@@ -561,21 +700,14 @@ AstNode* parse_StructType(parse& p) {
       return n;
     }
 
-    case Lex::Error: {
-      p.freeNode(n);
-      return nullptr;
-    }
-
-    default: {
-      p.error("unexpected token; expecting struct field");
-      p.freeNode(n);
-      return nullptr;
-    }
+    // error
+    case Lex::Error: return error();
+    default:         return error("unexpected token; expecting struct field");
   }
 }
 
 
-AstNode* parse_Type(parse& p, bool needToken) {
+AstNode* parse_Type(parse& p, bool needToken, Type* ty) {
   // Type      = TypeName | TypeLit | "(" Type ")"
   // TypeName  = identifier | QualIdent
   // TypeLit   = ArrayType | StructType | PointerType
@@ -591,15 +723,26 @@ AstNode* parse_Type(parse& p, bool needToken) {
       auto s = p.tokIStr();
       switch (s.hash()) {
         case IStr::hash("struct"): {
-          return parse_StructType(p);
+          return parse_StructType(p, tdef);
         }
         // TODO: interface
         // TODO: func
+
         default: {
-          return parse_IdentAny(p, /*needToken=*/false);
+          // alias for TypeName
+          auto n = parse_IdentAny(p, /*needToken=*/false);
+          if (n == nullptr) {
+            return nullptr;
+          }
+          n->ty = p.mod.typeofTypename(*n);
+          p.mod.regUnresolvedType(*n);
+          return n;
         }
       }
     }
+
+    // —— HERE —— build n->ty
+    //   how do we express pointer type? ty.children?
 
     case '*': {
       // PointerType = "*" Type
@@ -612,10 +755,12 @@ AstNode* parse_Type(parse& p, bool needToken) {
       n->type = AstPointerType;
       n->loc = loc;
       n->appendChild(*tn);
+      assert(tn->ty != nullptr);
+      n->ty = p.mod.types.getPointer(tn->ty);
       return n;
     }
 
-    // TODO: other types
+    // TODO: [], {}, etc
 
     case Lex::Error: return nullptr;
     default:         return p.error("unexpected token; expecting type");
@@ -700,13 +845,16 @@ AstNode* parse_multiIdent(parse& p, AstType typ, F onIdent) {
 
 AstNode* parse_TypeDecl(parse& p) {
   // TypeDecl = "type" ( TypeSpec | "(" { TypeSpec ";" } ")" )
-  // TypeSpec = identifier Type
+  // TypeSpec = TypeName Type
+  // TypeName = identifier
 
   return parse_multiIdent(p, AstTypeDecl, [&](AstNode& n, bool /*multi*/) {
     // TypeSpec = identifier Type
     // e.g.
     //   foo Bar             => (TypeSpec, foo, (TypeName, Bar))
     //   foo struct { ... }  => (TypeSpec, foo, (StructType, ...))
+
+    // TypeName
     auto tsn = make_Ident(p);
     if (tsn == nullptr) {
       return false;
@@ -714,11 +862,20 @@ AstNode* parse_TypeDecl(parse& p) {
     tsn->type = AstTypeSpec;
     n.appendChild(*tsn);
 
-    auto tn = parse_Type(p, /*needToken=*/true);
-    if (tn == nullptr) {
+    auto tdef = p.mod.addType(tsn->value.str, *tsn);
+    if (tdef == nullptr) {
+      p.error("name redeclared");
       return false;
     }
+
+    auto tn = parse_Type(p, /*needToken=*/true, tdef);
+    if (tn == nullptr) {
+      return false; // note: parse_multiIdent frees n and its children
+    }
     tsn->appendChild(*tn);
+
+    tdef->ty = tn->ty;
+
     return true;
   });
 }
@@ -795,7 +952,7 @@ AstNode* parse_ConstDecl(parse& p) {
     // ConstSpec
     auto csn = p.allocNode(AstConstSpec);
     csn->value.i = idcount;
-    csn->appendChildren(*idnodes);
+    csn->appendChildList(*idnodes);
     n.appendChild(*csn);
 
     // expect Type unless next token is "="
@@ -824,7 +981,7 @@ AstNode* parse_ConstDecl(parse& p) {
     if (exnodes == nullptr) {
       return false;
     }
-    csn->appendChildren(*exnodes);
+    csn->appendChildList(*exnodes);
 
     // Number of identifiers and expressions must match
     if (excount > idcount) {
@@ -886,7 +1043,7 @@ AstNode* parse_ParamDecl(parse& p, bool needToken) {
       if (listn == nullptr) {
         return error();
       }
-      n->appendChildren(*listn);
+      n->appendChildList(*listn);
       break;
     }
 
@@ -937,6 +1094,9 @@ AstNode* parse_ParamList(parse& p, uint64_t& count, bool needToken) {
   return parse_list(p, count, needToken, parse_ParamDecl);
 }
 
+static AstNode* parse_Type0(parse& p, bool needToken) {
+  return parse_Type(p, needToken);
+}
 
 AstNode* parse_TypeList(parse& p, uint64_t& count, bool needToken) {
   // TypeList = Type { "," Type }
@@ -945,7 +1105,7 @@ AstNode* parse_TypeList(parse& p, uint64_t& count, bool needToken) {
   // (ParamDecl
   //   (Ident int)
   //   (Ident string))
-  return parse_list(p, count, needToken, parse_Type);
+  return parse_list(p, count, needToken, parse_Type0);
 }
 
 
@@ -960,7 +1120,7 @@ AstNode* parse_TypeParams(parse& p, bool needToken) {
   }
   auto n = p.allocNode(AstParamDecl);
   n->value.i = 0;
-  n->appendChildren(*types);
+  n->appendChildList(*types);
   return n;
 }
 
@@ -993,7 +1153,7 @@ AstNode* parse_Signature(parse& p) {
       if (params == nullptr) {
         return error();
       }
-      n->appendChildren(*params);
+      n->appendChildList(*params);
       n->value.i = 1; // hasParams
       switch (p.tokNext()) {
         case '"': // allows trailing ","
@@ -1103,12 +1263,10 @@ AstNode* parse_Signature(parse& p) {
 //   (Block ...)
 
 AstNode* parse_FuncDecl(parse& p) {
-  // parses FunctionDecl or MethodDecl
-  //
-  // MethodDecl = "func" Receiver MethodName Signature FuncBody?
-  // Receiver   = "(" identifier Type [ "," ] ")"
-  //
+  // parses FuncDecl | MethodDecl
   // FuncDecl   = "func" FuncName Signature FuncBody?
+  // MethodDecl = "func" Receiver FuncName Signature FuncBody?
+  // Receiver   = [ TypeName | "(" Type ")" ] "."
   // FuncName   = identifier
   // FuncBody   = Block
 
@@ -1121,17 +1279,11 @@ AstNode* parse_FuncDecl(parse& p) {
   };
 
   switch (p.tokNext()) {
-    case Lex::Error: return nullptr;
+    case Lex::Error: return error();
 
     // Receiver
     case '(': {
       n = p.allocNode(AstMethodDecl);
-
-      auto ident = parse_Ident(p, /*needToken=*/true);
-      if (ident == nullptr) {
-        return error();
-      }
-      n->appendChild(*ident);
 
       auto typen = parse_Type(p, /*needToken=*/true);
       if (typen == nullptr) {
@@ -1139,36 +1291,112 @@ AstNode* parse_FuncDecl(parse& p) {
       }
       n->prependChild(*typen);
 
-      // Allow trailing ","
-      p.tokNextIfEq(',');
-
       if (p.tokNext() != ')') {
         return error("unexpected token; expecting \")\"");
       }
+      if (p.tokNext() != '.') {
+        return error("unexpected token; expecting \".\"");
+      }
 
-      // MethodName
+      // FuncName
       switch (p.tokNext()) {
         case Lex::Error: return error();
-        case Lex::Identifier: break;
-        default: return error("unexpected token; expecting method name");
+        case Lex::Identifier: {
+          n->value.str = p.tokIStr();
+          if (lang_isKeyword(n->value.str)) {
+            return error("reserved keyword");
+          }
+          break;
+        }
+        default: {
+          return error("unexpected token; expecting method name");
+        }
       }
       break;
     }
 
     case Lex::Identifier: {
-      // FuncName
+      // FuncName | TypeName
       n = p.allocNode(AstFuncDecl);
+      if (!make_IdentAndMaybeParseQual(p, *n)) {
+        return error();
+      }
+      if (n->type == AstQualIdent) {
+        // MethodDecl e.g. `func foo.bar()`
+        n->type = AstMethodDecl;
+
+        AstNode* leaf = n;
+        AstNode* leafp = nullptr;
+        while (1) {
+          leafp = leaf;
+          assert(!leaf->children.empty());
+          leaf = leaf->children.first;
+          if (leaf->type != AstQualIdent) {
+            break;
+          }
+        }
+
+        leafp->children.first = leafp->children.first = nullptr;
+        leafp->type = AstIdent;
+        leaf->children.first = leaf->children.last = n;
+        leaf->type = AstMethodDecl;
+        if (n != leafp) {
+          n->type = AstQualIdent;
+        }
+        n = leaf;
+
+        // Ident swap algorithm: `a.b.Foo.bar` =>
+        //
+        //   n = (MethodDecl a
+        //         (QualIdent b
+        //   leafp = (QualIdent Foo
+        //   leaf =    (Ident bar))))
+        //
+        // leafp->children.first = leafp->children.last = null
+        // leafp->type = AstIdent
+        //
+        //   n = (MethodDecl a
+        //         (QualIdent b
+        //   leafp = (Ident Foo)))
+        //   leaf = (Ident bar)
+        //
+        // leaf->children.first = leaf->children.last = n
+        // leaf->type = AstMethodDecl
+        // n = leaf
+        //
+        //   n = (MethodDecl bar
+        //         (QualIdent a
+        //           (QualIdent b
+        //             (Ident Foo))))
+        // 
+        // ——————————————————————————————————————————
+        // `Foo.bar` =>
+        //
+        //   n = leafp = (MethodDecl Foo
+        //   leaf =        (Ident bar))
+        //
+        // leafp->children.first = leafp->children.last = null
+        // leafp->type = AstIdent
+        //
+        //   n = leafp = (Ident Foo)
+        //   leaf = (Ident bar)
+        //
+        // leaf->children.first = leaf->children.last = n
+        // leaf->type = AstMethodDecl
+        // n = leaf
+        //
+        //   n = (MethodDecl bar
+        //         (Ident Foo))
+        //
+      } else {
+        n->type = AstFuncDecl;
+      }
       break;
     }
-    default: return p.error(
-      "unexpected token; expecting function name or method receiver"
-    );
-  }
 
-  // at FuncName
-  n->value.str = p.tokIStr();
-  if (lang_isKeyword(n->value.str)) {
-    return error("reserved keyword");
+    default: return error(
+      "unexpected token; expecting function name or method receiver type"
+    );
   }
 
   // Signature
@@ -1179,6 +1407,12 @@ AstNode* parse_FuncDecl(parse& p) {
   // FuncBody (aka Block)
   if (p.tokNextIfEq('{')) {
     // TODO FuncBody? ("{" ...)
+  }
+
+  // Add to module
+  auto err = p.mod.addFunc(*n);
+  if (err) {
+    return error(err.message());
   }
 
   return n;
@@ -1200,11 +1434,11 @@ AstNode* parse_Declaration(parse& p, bool topLevel) {
           return parse_ConstDecl(p);
         }
 
-        case IStr::hash("type"): {
+        case kLang_type_hash: {
           return parse_TypeDecl(p);
         }
 
-        case IStr::hash("func"): {
+        case kLang_func_hash: {
           if (!topLevel) {
             return p.error("reserved keyword");
           }
@@ -1220,7 +1454,7 @@ AstNode* parse_Declaration(parse& p, bool topLevel) {
 
     default: {
       std::cerr << "parse_Declaration: ignore "
-                << Lex::repr(p.tokCurr(), p.tokval)
+                << Lex::repr(p.tokCurr(), p.lex.byteStringTokValue())
                 << std::endl;
     }
   }
@@ -1269,7 +1503,7 @@ Err parse_importDecl(parse& p, Imports& imps) {
     }
   };
 
-  while (1) switch (p.lex.next(p.tokval)) {
+  while (1) switch (p.lex.next()) {
     case '(': {
       // e.g. `import ( ... )`
       if (multi) {
@@ -1301,7 +1535,7 @@ Err parse_importDecl(parse& p, Imports& imps) {
     case Lex::TextLit: {
       // e.g. `import "foo";`
       // e.g. `import ( "foo"; );`
-      ImportSpecs& s = imps[p.tokval];
+      ImportSpecs& s = imps[p.lex.interpretedTokValue()];
       auto res = s.emplace(ImportSpec{pkgName, p.lex.srcLoc()});
       if (!res.second) {
         // duplicate import
@@ -1356,7 +1590,7 @@ Err parse_importDecl(parse& p, Imports& imps) {
 }
 
 
-Err Parser::parsePkg(PkgDef& pkg) {
+Err Parser::parsePkgDecl(AstPkgDecl& pkg) {
   // PackageClause = "package" PackageName ";"
   // PackageName   = <Identifier except "_">
 
@@ -1371,13 +1605,13 @@ Err Parser::parsePkg(PkgDef& pkg) {
     case Lex::Error: return p.err;
     case Lex::End: {
       // empty file
-      pkg.name.clear();
+      pkg.name = nullptr;
       pkg.doc.clear();
       p.stage = Stage::End;
       return Err::OK();
     }
     case Lex::Identifier: {
-      if (p.tokval == U"package") {
+      if (p.lex.tokValueCmp("package") == 0) {
         // TODO: set comment, if any
         pkg.doc.clear();
         break;
@@ -1393,10 +1627,15 @@ Err Parser::parsePkg(PkgDef& pkg) {
   switch (p.tokNext()) {
     case Lex::Error: return p.err;
     case Lex::Identifier: {
-      if (p.tokval == U"_") {
+      if (p.lex.tokValueCmp("_") == 0) {
         return Err(ParseErr, "invalid package name");
       }
-      pkg.name = p.tokval;
+      pkg.name = p.tokIStr();
+      if (p.mod.name != nullptr && p.mod.name != pkg.name) {
+        return Err(ParseErr, "module name differs from package name");
+      } else {
+        p.mod.name = pkg.name;
+      }
       break;
     }
     default: {
@@ -1448,7 +1687,7 @@ Err Parser::parseImports(AstAllocator& astalloc, Imports& imps) {
       break;
     }
     case Lex::Identifier: {
-      if (_p->tokval == U"import") {
+      if (_p->lex.tokValueCmp("import") == 0) {
         auto err = parse_importDecl(*_p, imps);
         if (!err.ok()) {
           return err;

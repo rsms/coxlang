@@ -20,6 +20,7 @@
       T( FloatLit,     1   )/*   */ \
     T( EndNumLit, ')'      )/*   */ \
     T( CharLit,        1   )/*   */ \
+    T( RawStringLit,   1   )/*   */ \
     T( TextLit,        1   )/*   */ \
     T( ITextLit,       1   )/*   */ \
     T( ITextLitEnd,    1   )/*   */ \
@@ -31,8 +32,6 @@
   T( DataTail,         0   )/*  __END__ ...  */ \
 
 #define RX_LEX_TOKENS_DEFINED
-
-using std::string;
 
 struct Lex {
   using Token = UChar;
@@ -47,14 +46,14 @@ struct Lex {
   Err&& takeLastError();
 
   // Advance to next token or read the current token
-  Token next(Text&);
-  // bool nextIfEq(Token pred, Text&);
+  Token next();
+  // bool nextIfEq(Token pred);
   Token current() const;
 
   // Queue current tok to be returned from next next() call.
   // Does not affect value of current(), only next().
   // Multiple subsequent calls have no effect.
-  void undoCurrent(const Text& value);
+  void undoCurrent();
   Token queuedToken(); // returns Error if none
 
   // Scans ahead without changing state, and
@@ -71,19 +70,29 @@ struct Lex {
   // returns the first character that is not whitespace or control.
   // UChar peekNextChar();
 
-  // Get the current token value
-  // bool tokValueEq(const char*, size_t len) const;
-  // template<size_t N>
-  // size_t tokValueEq(char const(&p)[N]) { return tokValueEq(p, N-1); }
+  // Get the current token value.
+  // These methods access the raw value, as in the exact bytes from the
+  // source code that represents the current token.
   const char* byteTokValue(size_t&) const;
-  string byteStringTokValue() const;
-  void copyTokValue(string& s) const; // copies token value byte to s
+  std::string byteStringTokValue() const;
+  void copyTokValue(std::string& s) const; // copies token value byte to s
+
+  // value of interpreted literals. (string and char)
+  // This method returns an array of bytes that represent an interpreted
+  // value, potentially different from the source-code bytes.
+  const std::string& interpretedTokValue() const;
+
+  // Compare provided string to current raw token value. I.e. strcmp(str, tokval)
+  int tokValueCmp(const char* str, size_t len) const;
+  template<size_t N> int tokValueCmp(char const(&str)[N]) {
+    return tokValueCmp(str, N-1);
+  }
 
   // Source location of current token
   const SrcLoc& srcLoc() const;
 
   // Creates a string representation of a token suitable for display
-  static string repr(Token, const Text& value);
+  static std::string repr(Token, const std::string& value);
 
   // Lexer state snapshotting and restoration
   struct Snapshot;

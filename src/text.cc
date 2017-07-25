@@ -1,10 +1,10 @@
 #include "text.h"
 
 // #if !defined(__EXCEPTIONS) || !__EXCEPTIONS
-  #include "utf8/unchecked.h"
+// #include "utf8/unchecked.h"
   namespace UTF8 = utf8::unchecked;
   //#define UTF8_NEXT(inI, inE) UTF8::next(inI)
-  #define UTF8_NEXT(inI, inE) UTF8::next(inI, inE)
+  // #define UTF8_NEXT(inI, inE) UTF8::next(inI, inE)
 // #else
 //   #include "utf8/checked.h"
 //   namespace UTF8 = utf8;
@@ -122,6 +122,28 @@ string repr(const Text& t) {
 
   while (start != end) {
     auto c = *(start++);
+    if (c == '\\') {
+      *(I++) = '\\';
+      *(I++) = '\\';
+    } else if (isGraphicChar(c) || isWhitespaceChar(c)) {
+      UTF8::append(c, (decltype(I)&)I);
+    } else {
+      s += escape(c);
+    }
+  }
+
+  return s;
+}
+
+
+string repr(const char* p, size_t len) {
+  auto end = p + len;
+  std::string s;
+  s.reserve(len);
+  auto I = std::back_inserter(s);
+
+  while (p != end) {
+    auto c = UTF8::next(p, end);
     if (c == '\\') {
       *(I++) = '\\';
       *(I++) = '\\';

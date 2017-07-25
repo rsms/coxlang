@@ -24,7 +24,12 @@
 bool lang_isKeyword(const IStr&);
 
 // Symbols -- `IStr::Const kLang_ID` where ID is a name in LANG_CONST_ALL
-static constexpr size_t strlen_cx(char const* c) { return *c == '\0' ? 0 : 1 + strlen_cx(c+1); }
-#define S(name)  extern const IStr::Const<strlen_cx(#name)+1> kLang_##name;
+static constexpr size_t langconst_strlen_cx(char const* c) {
+  return *c == '\0' ? 0 : 1 + langconst_strlen_cx(c+1);
+}
+#define S(name) \
+  extern const IStr::Const<langconst_strlen_cx(#name)+1> kLang_##name; \
+  constexpr uint32_t kLang_##name##_hash = \
+    IStr::hash(#name, langconst_strlen_cx(#name));
 LANG_CONST_ALL
 #undef S

@@ -1,7 +1,21 @@
 #!/usr/bin/env python
 "Script that generates the build.ninja file"
-
 from __future__ import print_function
+
+# source files
+lib_src  = [
+  'text',
+  'ast',
+  'readfile',
+  'langconst',
+  'istr',
+  'strtoint',
+  'types',
+  'lex',
+  'parse',
+  'mod',
+  'wasm',
+]
 
 from optparse import OptionParser
 import os
@@ -34,12 +48,6 @@ if options.host:
     host = platform_helper.Platform(options.host)
 else:
     host = platform
-
-# source files
-lib_src  = [
-  'text', 'ast', 'readfile', 'langconst', 'istr', 'strtou64',
-  'lex', 'parse',
-]
 
 # lib_src += ['os_' + platform.platform()]
 
