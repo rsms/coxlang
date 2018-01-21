@@ -1,5 +1,3 @@
-# Co
-
 Programming language inspired by [Go](https://golang.org/) that compiles to [WASM](https://webassembly.github.io/).
 
 > This is a very early project.
